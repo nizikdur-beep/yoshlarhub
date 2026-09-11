@@ -167,6 +167,8 @@ function renderCategoryCatalog(Opportunity $oppModel, int $categoryId, int $page
             ];
         }
         $inlineKeyboard[] = $navRow;
+    }
+
     // Yopish tugmasi (to'liq kenglikda)
     $inlineKeyboard[] = [
         [
