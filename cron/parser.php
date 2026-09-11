@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+header('Content-Type: text/html; charset=utf-8');
+
 $config = require __DIR__ . '/../config/config.php';
 
 require __DIR__ . '/../src/Database.php';
@@ -12,7 +14,7 @@ require __DIR__ . '/../src/AIParser.php';
 $db = new Database($config)->pdo();
 $scraper = new ChannelScraper();
 $geminiApiKey = $config['gemini_api_key'] ?? getenv('GEMINI_API_KEY') ?: '';
-$aiParser = new AIParser($geminiApiKey);
+$aiParser = new AIParser((string)$geminiApiKey);
 
 // Duplikatlarni tekshirish uchun jadval yaratish
 $db->exec("
@@ -24,6 +26,12 @@ $db->exec("
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 ");
+
+// Reset parametri berilgan bo'lsa qaytadan tozalaymiz
+if (isset($_GET['reset']) && $_GET['reset'] === '1') {
+    $db->exec("TRUNCATE TABLE parsed_sources");
+    echo "<p style='color:orange;'>🔄 Xotira tozalandi, barcha manbalar qaytadan tahlil qilinadi!</p>";
+}
 
 // Kuzatiladigan Telegram kanallari va Saytlar
 $sources = [
@@ -39,18 +47,33 @@ $sources = [
     ['type' => 'rss', 'target' => 'https://brightfuturesuzbekistan.uz/feed/', 'name' => 'Bright Futures'],
 ];
 
-echo "🚀 YoshlarHub Avtomatik Parser ishga tushdi...\n\n";
+echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>YoshlarHub Parser</title>";
+echo "<style>body{font-family:sans-serif;background:#1e1e2f;color:#fff;padding:20px;line-height:1.6;} .card{background:#2a2b3d;padding:15px;margin-bottom:15px;border-radius:8px;} .success{color:#4ade80;} .info{color:#60a5fa;} .warn{color:#fbbf24;}</style>";
+echo "</head><body>";
+
+echo "<h2>🚀 YoshlarHub Avtomatik AI Parser</h2>";
+
+if (empty($geminiApiKey)) {
+    echo "<div class='card' style='border-left:4px solid red;'><b style='color:#f87171;'>⚠️ DIQQAT: GEMINI_API_KEY topilmadi!</b><br>Iltimos, hostingdagi <code>.env</code> faylga <code>GEMINI_API_KEY=AIzaSy...</code> deb yozing.</div>";
+}
 
 $addedCount = 0;
 
 foreach ($sources as $source) {
-    echo "🔍 Tekshirilmoqda: {$source['name']} ({$source['type']})...\n";
+    echo "<div class='card'>";
+    echo "<h3 class='info'>🔍 Tekshirilmoqda: {$source['name']} ({$source['type']})</h3>";
 
     $posts = [];
     if ($source['type'] === 'telegram') {
         $posts = $scraper->scrapeTelegramChannel($source['target'], 3);
     } elseif ($source['type'] === 'rss') {
         $posts = $scraper->scrapeRssFeed($source['target'], $source['name'], 3);
+    }
+
+    if (empty($posts)) {
+        echo "<p class='warn'>⚠️ Bu manbadan postlar topilmadi.</p>";
+        echo "</div>";
+        continue;
     }
 
     foreach ($posts as $post) {
@@ -60,14 +83,11 @@ foreach ($sources as $source) {
         $checkStmt = $db->prepare("SELECT id FROM parsed_sources WHERE post_identifier = ?");
         $checkStmt->execute([$identifier]);
         if ($checkStmt->fetch()) {
-            continue; // Allaqachon tahlil qilingan
+            echo "<p style='color:#9ca3af;'>⏩ Allaqachon ko'rilgan: " . htmlspecialchars(mb_substr($post['text'], 0, 40)) . "...</p>";
+            continue;
         }
 
-        // Boshqa tahlil qilinmasligi uchun saqlab qo'yamiz
-        $insParsed = $db->prepare("INSERT IGNORE INTO parsed_sources (source_type, source_name, post_identifier) VALUES (?, ?, ?)");
-        $insParsed->execute([$post['source_type'], $post['source_name'], $identifier]);
-
-        echo "  🤖 AI tahlil qilmoqda: " . mb_substr($post['text'], 0, 50) . "...\n";
+        echo "<p>🤖 <b>AI tahlil qilmoqda:</b> <i>" . htmlspecialchars(mb_substr($post['text'], 0, 60)) . "...</i>";
 
         // Gemini AI orqali tahlil qilish
         $analyzed = $aiParser->analyzeOpportunity(
@@ -77,9 +97,18 @@ foreach ($sources as $source) {
         );
 
         if (!$analyzed) {
-            echo "  ⏩ O'tkazib yuborildi (imkoniyat emas yoki xatolik).\n";
+            echo " → <span class='warn'>O'tkazib yuborildi (imkoniyat emas yoki xatolik).</span></p>";
+            // Faqat API xatosi bo'lmasa eslab qolamiz
+            if (!empty($geminiApiKey)) {
+                $insParsed = $db->prepare("INSERT IGNORE INTO parsed_sources (source_type, source_name, post_identifier) VALUES (?, ?, ?)");
+                $insParsed->execute([$post['source_type'], $post['source_name'], $identifier]);
+            }
             continue;
         }
+
+        // Boshqa qayta tahlil qilinmasligi uchun saqlab qo'yamiz
+        $insParsed = $db->prepare("INSERT IGNORE INTO parsed_sources (source_type, source_name, post_identifier) VALUES (?, ?, ?)");
+        $insParsed->execute([$post['source_type'], $post['source_name'], $identifier]);
 
         // Baza (opportunities) ga yozish
         $insertStmt = $db->prepare("
@@ -121,11 +150,17 @@ foreach ($sources as $source) {
         ]);
 
         $addedCount++;
-        echo "  ✅ QO'SHILDI: {$analyzed['title']} ({$analyzed['region']})\n";
+        echo " → <b class='success'>✅ BAZAGA QO'SHILDI:</b> " . htmlspecialchars($analyzed['title']) . " (" . htmlspecialchars($analyzed['region']) . ")</p>";
 
         // Gemini API limitiga tushmaslik uchun 1 soniya kutish
         sleep(1);
     }
+
+    echo "</div>";
 }
 
-echo "\n🎉 Jarayon yakunlandi! Jami yangi qo'shilgan imkoniyatlar: {$addedCount} ta.\n";
+echo "<div class='card' style='border-top:2px solid #4ade80;'>";
+echo "<h3>🎉 Jarayon yakunlandi! Jami yangi qo'shilgan imkoniyatlar: <span class='success'>{$addedCount} ta</span></h3>";
+echo "<p><a href='?reset=1' style='color:#60a5fa;'>🔄 Qaytadan to'liq skaner qilish (Reset)</a> | <a href='../admin/' style='color:#4ade80;'>👉 Admin panelga o'tish</a></p>";
+echo "</div>";
+echo "</body></html>";

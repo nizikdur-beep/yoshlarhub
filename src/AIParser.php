@@ -8,7 +8,7 @@ class AIParser
 
     public function __construct(string $apiKey)
     {
-        $this->apiKey = $apiKey;
+        $this->apiKey = trim($apiKey);
     }
 
     /**
@@ -17,7 +17,7 @@ class AIParser
     public function analyzeOpportunity(string $rawText, ?string $sourceUrl = null, ?string $extractedImageUrl = null): ?array
     {
         if (empty($this->apiKey)) {
-            error_log('GEMINI_API_KEY belgilanmagan.');
+            echo " <b style='color:red;'>[XATO: GEMINI_API_KEY topilmadi! .env faylni tekshiring]</b> ";
             return null;
         }
 
@@ -57,42 +57,62 @@ Javobni FAQAT toza JSON formatida bering (hech qanday markdown yoki ```json belg
 }
 PROMPT;
 
-        $apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" . $this->apiKey;
+        $models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+        $response = false;
+        $usedModel = '';
 
-        $postData = [
-            'contents' => [
-                [
-                    'role' => 'user',
-                    'parts' => [
-                        [
-                            'text' => $systemPrompt . "\n\nE'lon matni:\n" . $rawText
+        foreach ($models as $model) {
+            $apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key=" . $this->apiKey;
+
+            $postData = [
+                'contents' => [
+                    [
+                        'role' => 'user',
+                        'parts' => [
+                            [
+                                'text' => $systemPrompt . "\n\nE'lon matni:\n" . $rawText
+                            ]
                         ]
                     ]
+                ],
+                'generationConfig' => [
+                    'temperature' => 0.2,
+                    'maxOutputTokens' => 1024,
                 ]
-            ],
-            'generationConfig' => [
-                'temperature' => 0.2,
-                'maxOutputTokens' => 1024,
-            ]
-        ];
+            ];
 
-        $ch = curl_init($apiUrl);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($postData),
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-            CURLOPT_TIMEOUT => 20,
-        ]);
+            $ch = curl_init($apiUrl);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($postData),
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                CURLOPT_TIMEOUT => 15,
+            ]);
 
-        $response = curl_exec($ch);
-        curl_close($ch);
+            $response = curl_exec($ch);
+            curl_close($ch);
+
+            if ($response) {
+                $resJson = json_decode($response, true);
+                if (!isset($resJson['error']) && !empty($resJson['candidates'][0]['content']['parts'][0]['text'])) {
+                    $usedModel = $model;
+                    break;
+                }
+            }
+        }
 
         if (!$response) {
+            echo " <b style='color:red;'>[API ulanishda xato]</b> ";
             return null;
         }
 
         $resJson = json_decode($response, true);
+        if (isset($resJson['error'])) {
+            echo " <b style='color:red;'>[Gemini xatosi: " . htmlspecialchars($resJson['error']['message'] ?? '') . "]</b> ";
+            return null;
+        }
+
         $responseText = $resJson['candidates'][0]['content']['parts'][0]['text'] ?? '';
 
         // Tozalash (agar ```json bo'lsa)
@@ -107,7 +127,7 @@ PROMPT;
             return null;
         }
 
-        // Rasm mantig'i: agar rasm topilgan bo'lsa o'shani olamiz, bo'lmasa kategoriya bo'yicha chiroyli cover beramiz
+        // Rasm mantig'i
         $imageUrl = $extractedImageUrl;
         if (empty($imageUrl)) {
             $imageUrl = $this->generateDefaultBanner((int)($parsed['category_id'] ?? 1));
