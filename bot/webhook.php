@@ -167,7 +167,13 @@ function renderCategoryCatalog(Opportunity $oppModel, int $categoryId, int $page
             ];
         }
         $inlineKeyboard[] = $navRow;
-    }
+    // Yopish tugmasi (to'liq kenglikda)
+    $inlineKeyboard[] = [
+        [
+            'text' => '❌ Yopish',
+            'callback_data' => 'close',
+        ]
+    ];
 
     return [
         'text' => $text,
@@ -199,6 +205,17 @@ if (isset($update['callback_query'])) {
         exit;
     }
 
+    // 0. Xabarni yo'q qilish (❌ Yopish)
+    if ($data === 'close') {
+        $telegram->deleteMessage($chatId, $messageId);
+        $telegram->request('answerCallbackQuery', [
+            'callback_query_id' => $callbackId,
+            'text' => 'Xabar yopildi',
+            'show_alert' => false
+        ]);
+        exit;
+    }
+
     // 1. Sahifalash (Katalog ro'yxati)
     if (str_starts_with($data, 'catpage:')) {
         $parts = explode(':', $data);
@@ -207,12 +224,22 @@ if (isset($update['callback_query'])) {
 
         $catalog = renderCategoryCatalog($opportunity, $categoryId, $page);
 
-        $telegram->editMessageText(
+        // Agar oldingi xabar rasm bo'lsa, editMessageText xato berishi mumkin
+        $editRes = $telegram->editMessageText(
             $chatId,
             $messageId,
             $catalog['text'],
             $catalog['keyboard']
         );
+
+        if (!($editRes['ok'] ?? false)) {
+            $telegram->deleteMessage($chatId, $messageId);
+            $telegram->sendMessage(
+                $chatId,
+                $catalog['text'],
+                $catalog['keyboard']
+            );
+        }
 
         $telegram->request('answerCallbackQuery', ['callback_query_id' => $callbackId]);
         exit;
@@ -266,6 +293,14 @@ if (isset($update['callback_query'])) {
             [
                 'text' => '📤 Ulashish',
                 'url' => "https://t.me/share/url?url={$shareUrl}&text={$shareText}",
+            ]
+        ];
+
+        // Pastiga to'liq kenglikda ❌ Yopish tugmasi
+        $inlineKeyboard[] = [
+            [
+                'text' => '❌ Yopish',
+                'callback_data' => 'close',
             ]
         ];
 
@@ -505,6 +540,13 @@ if ($text === '⭐ Saqlanganlar') {
             ];
         }
 
+        $inlineKeyboard[] = [
+            [
+                'text' => '❌ Yopish',
+                'callback_data' => 'close',
+            ]
+        ];
+
         if (!empty($item['image_url'])) {
             $telegram->sendPhoto(
                 $chatId,
@@ -653,6 +695,13 @@ if ($text !== '') {
             [
                 'text' => '📤 Do\'stlarga ulashish',
                 'url' => "https://t.me/share/url?url={$shareUrl}&text={$shareText}",
+            ]
+        ];
+
+        $inlineKeyboard[] = [
+            [
+                'text' => '❌ Yopish',
+                'callback_data' => 'close',
             ]
         ];
 
