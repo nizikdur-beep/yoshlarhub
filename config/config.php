@@ -56,6 +56,7 @@ function env(string $key, ?string $default = null): ?string
 return [
     'bot_token' => env('BOT_TOKEN'),
     'admin_id' => (int) env('ADMIN_ID', '0'),
+    'gemini_api_key' => env('GEMINI_API_KEY', ''),
 
     'db' => [
         'host' => env('DB_HOST', 'localhost'),
