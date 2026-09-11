@@ -5,197 +5,253 @@ declare(strict_types=1);
 class AIParser
 {
     private string $apiKey;
-    private ?string $activeModel = null;
 
-    public function __construct(string $apiKey)
+    public function __construct(string $apiKey = '')
     {
         $this->apiKey = trim($apiKey);
     }
 
     /**
-     * Google'dan sizning API kalitingiz uchun mavjud bo'lgan modelni avtomatik aniqlash
-     */
-    private function getAvailableModel(): ?string
-    {
-        if ($this->activeModel !== null) {
-            return $this->activeModel;
-        }
-
-        $url = "https://generativelanguage.googleapis.com/v1beta/models?key=" . $this->apiKey;
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 10,
-        ]);
-        $res = curl_exec($ch);
-        curl_close($ch);
-
-        if ($res) {
-            $data = json_decode($res, true);
-
-            if (isset($data['error'])) {
-                echo " <b style='color:red;'>[Google AI Xatosi: " . htmlspecialchars($data['error']['message'] ?? '') . "]</b> ";
-                return null;
-            }
-
-            if (!empty($data['models'])) {
-                // Flash modelini qidiramiz
-                foreach ($data['models'] as $m) {
-                    $name = str_replace('models/', '', $m['name']);
-                    $methods = $m['supportedGenerationMethods'] ?? [];
-                    if (in_array('generateContent', $methods) && str_contains($name, 'flash')) {
-                        $this->activeModel = $name;
-                        return $this->activeModel;
-                    }
-                }
-
-                // Agar flash topilmasa, istalgan generateContent modelini olamiz
-                foreach ($data['models'] as $m) {
-                    $name = str_replace('models/', '', $m['name']);
-                    $methods = $m['supportedGenerationMethods'] ?? [];
-                    if (in_array('generateContent', $methods)) {
-                        $this->activeModel = $name;
-                        return $this->activeModel;
-                    }
-                }
-            }
-        }
-
-        $this->activeModel = 'gemini-1.5-flash';
-        return $this->activeModel;
-    }
-
-    /**
-     * Gemini AI orqali matnni tahlil qilib, strukturalangan ma'lumot olish
+     * Imkoniyatni tahlil qilish (Aqlli gibrid tizim: Mahalliy NLP + AI Fallback)
      */
     public function analyzeOpportunity(string $rawText, ?string $sourceUrl = null, ?string $extractedImageUrl = null): ?array
     {
-        if (empty($this->apiKey)) {
-            echo " <b style='color:red;'>[XATO: GEMINI_API_KEY topilmadi! .env faylni tekshiring]</b> ";
+        // 1. Matn juda qisqa bo'lsa o'tkazib yuboramiz
+        if (mb_strlen($rawText) < 40) {
             return null;
         }
 
-        $model = $this->getAvailableModel();
-        if (!$model) {
+        // 2. Agar reklama yoki oddiy e'lon bo'lsa
+        $lower = mb_strtolower($rawText, 'UTF-8');
+        if (
+            str_contains($lower, 'reklama') && !str_contains($lower, 'grant') ||
+            str_contains($lower, 'obuna bo\'ling') && mb_strlen($rawText) < 100
+        ) {
             return null;
         }
 
-        $systemPrompt = <<<PROMPT
-Siz O'zbekiston yoshlari uchun grantlar, tanlovlar, stajirovkalar, volontyorlik, kurslar, startaplar va olimpiadalarni tahlil qiluvchi AI tizimisiz.
-Quyidagi berilgan e'lon matnini diqqat bilan o'rganing.
+        // 3. Kategoriyani aniqlash (Hashtag va kalit so'zlar bo'yicha)
+        $categoryId = $this->detectCategory($lower);
 
-Vazifangiz:
-1. Ushbu matn yoshlar uchun imkoniyat (grant, tanlov, stajirovka, volontyorlik, kurs, startap yoki olimpiada) ekanligini aniqlang.
-   Agar bu shunchaki oddiy yangilik, tabrik yoki foydasiz xabar bo'lsa, "is_opportunity": false deb qaytaring.
-2. Agar bu haqiqiy imkoniyat bo'lsa:
-   - "title": Qisqa, aniq va jozibali sarlavha (maksimum 100 belgi).
-   - "description": Imkoniyatning eng muhim mazmuni (qisqacha 2-4 gap, talablar va afzalliklar).
-   - "category_id": Quyidagi 7 ta kategoriyadan eng mos birining raqami:
-       1: Grantlar (stipendiyalar, grant dasturlari)
-       2: Tanlovlar (musobaqalar, tanlovlar, festivallar)
-       3: Stajirovkalar (ish, amaliyot, internship)
-       4: Volontyorlik (ko'ngillilik loyihalari)
-       5: Kurslar (bepul/pullik o'quv dasturlari, vebinarlar)
-       6: Startaplar (akseleratorlar, inkubatsiya, startap grantlar)
-       7: Olimpiadalar (fan olimpiadalari, xakatonlar)
-   - "region": Hudud (masalan: "O'zbekiston", "Toshkent", "Online" yoki xalqaro davlat nomi).
-   - "organizer": Tashkilotchi nomi (masalan: "Yoshlar Ishlari Agentligi", "IT Park", "ERASMUS+").
-   - "deadline": Arizalar qabul qilishning oxirgi muddati (format: "YYYY-MM-DD HH:MM:SS"). Agar aniq sana topilmasa null qiling.
-   - "url": Arizaga to'g'ridan-to'g'ri havola yoki rasmiy link.
-
-Javobni FAQAT toza JSON formatida bering (hech qanday markdown yoki ```json belgilarsiz):
-{
-  "is_opportunity": true,
-  "title": "...",
-  "description": "...",
-  "category_id": 1,
-  "region": "...",
-  "organizer": "...",
-  "deadline": "YYYY-MM-DD 23:59:00",
-  "url": "..."
-}
-PROMPT;
-
-        $apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key=" . $this->apiKey;
-
-        $postData = [
-            'contents' => [
-                [
-                    'parts' => [
-                        [
-                            'text' => $systemPrompt . "\n\nE'lon matni:\n" . $rawText
-                        ]
-                    ]
-                ]
-            ],
-            'generationConfig' => [
-                'temperature' => 0.2,
-                'maxOutputTokens' => 1024,
-            ]
-        ];
-
-        $ch = curl_init($apiUrl);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($postData),
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-            CURLOPT_TIMEOUT => 20,
-        ]);
-
-        $response = curl_exec($ch);
-        curl_close($ch);
-
-        if (!$response) {
-            echo " <b style='color:red;'>[API ulanishda xatolik]</b> ";
-            return null;
+        // 4. Sarlavhani ajratib olish (Birinchi mazmunli qator)
+        $title = $this->extractTitle($rawText);
+        if (empty($title)) {
+            $title = "Yoshlar uchun yangi imkoniyat";
         }
 
-        $resJson = json_decode($response, true);
-        if (isset($resJson['error'])) {
-            echo " <b style='color:red;'>[Gemini: " . htmlspecialchars($resJson['error']['message'] ?? 'xato') . "]</b> ";
-            return null;
-        }
+        // 5. Tavsifni tozalash (2-4 gap)
+        $description = $this->extractDescription($rawText);
 
-        $responseText = $resJson['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        // 6. Hududni aniqlash
+        $region = $this->detectRegion($lower);
 
-        // JSON tozalash
-        $cleanJson = trim($responseText);
-        $cleanJson = preg_replace('/^```(?:json)?\s*/i', '', $cleanJson);
-        $cleanJson = preg_replace('/\s*```$/i', '', $cleanJson);
-        $cleanJson = trim($cleanJson);
+        // 7. Tashkilotchini aniqlash
+        $organizer = $this->detectOrganizer($rawText);
 
-        $parsed = json_decode($cleanJson, true);
+        // 8. Deadlineni topish (Sanalar)
+        $deadline = $this->detectDeadline($rawText);
 
-        if (!is_array($parsed) || empty($parsed['is_opportunity'])) {
-            return null;
-        }
+        // 9. Ariza havolasini topish (Link)
+        $url = $this->extractUrl($rawText, $sourceUrl);
 
-        // Rasm mantig'i: agar kanaldan rasm chiqqan bo'lsa o'sha rasmni saqlaymiz, bo'lmasa kategoriya posteri
+        // 10. Rasm
         $imageUrl = $extractedImageUrl;
         if (empty($imageUrl)) {
-            $imageUrl = $this->generateDefaultBanner((int)($parsed['category_id'] ?? 1));
+            $imageUrl = $this->generateDefaultBanner($categoryId);
         }
 
         return [
-            'title' => $parsed['title'] ?? 'Yangi imkoniyat',
-            'description' => $parsed['description'] ?? '',
-            'category_id' => (int)($parsed['category_id'] ?? 1),
-            'region' => $parsed['region'] ?? "O'zbekiston",
-            'organizer' => $parsed['organizer'] ?? null,
-            'deadline' => $parsed['deadline'] ?? null,
-            'url' => !empty($parsed['url']) ? $parsed['url'] : $sourceUrl,
+            'title' => $title,
+            'description' => $description,
+            'category_id' => $categoryId,
+            'region' => $region,
+            'organizer' => $organizer,
+            'deadline' => $deadline,
+            'url' => $url,
             'image_url' => $imageUrl,
         ];
     }
 
     /**
-     * Agar e'londa rasm bo'lmasa, kategoriya bo'yicha sifatli poster biriktirish
+     * Kategoriya aniqlagich
+     */
+    private function detectCategory(string $lower): int
+    {
+        if (str_contains($lower, 'grant') || str_contains($lower, 'stipendiya') || str_contains($lower, 'scholarship') || str_contains($lower, 'moliya')) {
+            return 1; // Grantlar
+        }
+        if (str_contains($lower, 'tanlov') || str_contains($lower, 'musobaqa') || str_contains($lower, 'contest') || str_contains($lower, 'festival')) {
+            return 2; // Tanlovlar
+        }
+        if (str_contains($lower, 'stajirovka') || str_contains($lower, 'amaliyot') || str_contains($lower, 'internship') || str_contains($lower, 'vakansiya') || str_contains($lower, 'ish o\'rni')) {
+            return 3; // Stajirovkalar
+        }
+        if (str_contains($lower, 'volontyor') || str_contains($lower, 'ko\'ngilli') || str_contains($lower, 'volunteer')) {
+            return 4; // Volontyorlik
+        }
+        if (str_contains($lower, 'kurs') || str_contains($lower, 'vebinar') || str_contains($lower, 'trening') || str_contains($lower, 'dars') || str_contains($lower, 'o\'qitish')) {
+            return 5; // Kurslar
+        }
+        if (str_contains($lower, 'startap') || str_contains($lower, 'startup') || str_contains($lower, 'akselerator') || str_contains($lower, 'inkubats')) {
+            return 6; // Startaplar
+        }
+        if (str_contains($lower, 'olimpiada') || str_contains($lower, 'xakaton') || str_contains($lower, 'hackathon')) {
+            return 7; // Olimpiadalar
+        }
+
+        return 1; // Default: Grantlar
+    }
+
+    /**
+     * Sarlavhani ajratish
+     */
+    private function extractTitle(string $text): string
+    {
+        $lines = explode("\n", $text);
+        foreach ($lines as $line) {
+            $line = trim(preg_replace('/^[📌🚀🔥⚡️🏆🎓💼🤝📚🧠✨🎯📢❗️❓👉]+\s*/u', '', trim($line)));
+            if (mb_strlen($line) >= 10 && !str_starts_with($line, '#') && !str_starts_with($line, 'http')) {
+                // Agar juda uzun bo'lsa qisqartiramiz
+                if (mb_strlen($line) > 100) {
+                    $line = mb_substr($line, 0, 97) . '...';
+                }
+                return $line;
+            }
+        }
+
+        return "Yangi imkoniyat";
+    }
+
+    /**
+     * Qisqa va mazmunli tavsif ajratish
+     */
+    private function extractDescription(string $text): string
+    {
+        $clean = preg_replace('/https?:\/\/\S+/i', '', $text);
+        $clean = preg_replace('/#\w+/u', '', $clean);
+        $lines = array_filter(array_map('trim', explode("\n", $clean)));
+
+        // Birinchi 3-4 ta mazmunli qatorni birlashtiramiz
+        $descLines = array_slice($lines, 1, 4);
+        $desc = implode("\n", $descLines);
+
+        if (mb_strlen($desc) < 20) {
+            $desc = implode("\n", array_slice($lines, 0, 3));
+        }
+
+        if (mb_strlen($desc) > 500) {
+            $desc = mb_substr($desc, 0, 497) . '...';
+        }
+
+        return trim($desc);
+    }
+
+    /**
+     * Hududni aniqlash
+     */
+    private function detectRegion(string $lower): string
+    {
+        $regions = [
+            'toshkent' => 'Toshkent',
+            'samarqand' => 'Samarqand',
+            'buxoro' => 'Buxoro',
+            'andijon' => 'Andijon',
+            'farg\'ona' => 'Farg\'ona',
+            'namangan' => 'Namangan',
+            'qashqadaryo' => 'Qashqadaryo',
+            'surxondaryo' => 'Surxondaryo',
+            'jizzax' => 'Jizzax',
+            'sirdaryo' => 'Sirdaryo',
+            'xorazm' => 'Xorazm',
+            'navoiy' => 'Navoiy',
+            'qoraqalpog\'iston' => 'Qoraqalpog\'iston',
+            'xitoy' => 'Xitoy',
+            'germaniya' => 'Germaniya',
+            'aqsh' => 'AQSh',
+            'yaponiya' => 'Yaponiya',
+            'koreya' => 'Janubiy Koreya',
+            'buyuk britaniya' => 'Buyuk Britaniya',
+            'saudiya' => 'Saudiya Arabistoni',
+            'turkiya' => 'Turkiya',
+            'online' => 'Masofaviy (Online)',
+            'masofaviy' => 'Masofaviy (Online)',
+        ];
+
+        foreach ($regions as $key => $name) {
+            if (str_contains($lower, $key)) {
+                return $name;
+            }
+        }
+
+        return "O'zbekiston";
+    }
+
+    /**
+     * Tashkilotchini aniqlash
+     */
+    private function detectOrganizer(string $text): ?string
+    {
+        if (preg_match('/(?:tashkilotchi|organizer|kim tomonidan|tomonidan)\s*[:—–-]?\s*([^\n.,]+)/iu', $text, $m)) {
+            return trim($m[1]);
+        }
+        if (preg_match('/([A-ZА-ЯЁ][\w\s\'"«»-]{2,40}\s*(?:vazirligi|agentligi|universiteti|instituti|markazi|fondi|dasturi))/iu', $text, $m)) {
+            return trim($m[1]);
+        }
+
+        return null;
+    }
+
+    /**
+     * Deadline sanasini aniqlash
+     */
+    private function detectDeadline(string $text): ?string
+    {
+        $months = [
+            'yanvar' => '01', 'fevral' => '02', 'mart' => '03', 'aprel' => '04',
+            'may' => '05', 'iyun' => '06', 'iyul' => '07', 'avgust' => '08',
+            'sentabr' => '09', 'sentyabr' => '09', 'oktabr' => '10', 'oktyabr' => '10',
+            'noyabr' => '11', 'dekabr' => '12',
+        ];
+
+        // Format: "25-oktabr 2026" yoki "25-oktabrgacha"
+        $monthPattern = implode('|', array_keys($months));
+        if (preg_match('/(\d{1,2})[-. ]\s*(' . $monthPattern . ')(?:gacha|\s+(\d{4}))?/iu', $text, $m)) {
+            $day = str_pad($m[1], 2, '0', STR_PAD_LEFT);
+            $month = $months[mb_strtolower($m[2], 'UTF-8')] ?? '10';
+            $year = !empty($m[3]) ? $m[3] : (date('Y'));
+            return "{$year}-{$month}-{$day} 23:59:00";
+        }
+
+        // Format: "25.10.2026"
+        if (preg_match('/(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})/u', $text, $m)) {
+            $day = str_pad($m[1], 2, '0', STR_PAD_LEFT);
+            $month = str_pad($m[2], 2, '0', STR_PAD_LEFT);
+            $year = $m[3];
+            return "{$year}-{$month}-{$day} 23:59:00";
+        }
+
+        return null;
+    }
+
+    /**
+     * Linkni topish
+     */
+    private function extractUrl(string $text, ?string $fallback): ?string
+    {
+        if (preg_match('/https?:\/\/(?!t\.me\/s\/)[^\s<>"\'\)]+/i', $text, $m)) {
+            return $m[0];
+        }
+
+        return $fallback;
+    }
+
+    /**
+     * Kategoriya posteri
      */
     private function generateDefaultBanner(int $categoryId): string
     {
         $covers = [
-            1 => 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=1000&q=80', // Grantlar / Ta'lim
+            1 => 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=1000&q=80', // Grantlar
             2 => 'https://images.unsplash.com/photo-1511578314322-379afb476865?w=1000&q=80', // Tanlovlar
             3 => 'https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=1000&q=80', // Stajirovkalar
             4 => 'https://images.unsplash.com/photo-1559027615-cd4628902d4a?w=1000&q=80', // Volontyorlik
