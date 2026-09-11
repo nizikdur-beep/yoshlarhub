@@ -12,6 +12,65 @@ $db = new Database($config)->pdo();
 $telegram = new Telegram($config['bot_token']);
 $opportunity = new Opportunity($db);
 
+/**
+ * Imkoniyat kartasini zamonaviy va chiroyli formatlash
+ */
+function formatOpportunityCard(array $item): string
+{
+    $emoji = $item['emoji'] ?? '📌';
+    $title = htmlspecialchars(trim($item['title']));
+    $desc = htmlspecialchars(trim($item['description']));
+    $categoryName = htmlspecialchars($item['category_name'] ?? 'Imkoniyat');
+
+    // Sarlavha
+    $text = "{$emoji} <b>" . mb_strtoupper($title, 'UTF-8') . "</b>\n\n";
+
+    // Tavsif (Telegram blockquote - vertikal chiziqli zamonaviy dizayn)
+    $text .= "<blockquote>{$desc}</blockquote>\n\n";
+
+    // Tashkilotchi
+    if (!empty($item['organizer'])) {
+        $text .= "🏛 <b>Tashkilotchi:</b> " . htmlspecialchars($item['organizer']) . "\n";
+    }
+
+    // Hudud
+    if (!empty($item['region'])) {
+        $text .= "📍 <b>Hudud:</b> " . htmlspecialchars($item['region']) . "\n";
+    }
+
+    // Deadline (chiroyli format va qolgan kunlar hisoblagichi)
+    if (!empty($item['deadline'])) {
+        $time = strtotime($item['deadline']);
+        $months = [
+            1 => 'yanvar', 2 => 'fevral', 3 => 'mart', 4 => 'aprel', 5 => 'may', 6 => 'iyun',
+            7 => 'iyul', 8 => 'avgust', 9 => 'sentabr', 10 => 'oktabr', 11 => 'noyabr', 12 => 'dekabr'
+        ];
+        $day = date('j', $time);
+        $month = $months[(int)date('n', $time)] ?? date('m', $time);
+        $year = date('Y', $time);
+        $hour = date('H:i', $time);
+
+        $now = time();
+        $diff = $time - $now;
+        if ($diff > 0) {
+            $days = (int) floor($diff / 86400);
+            $countdown = $days > 0 ? " (⏳ <i>{$days} kun qoldi</i>)" : " (⏳ <i>Bugun oxirgi kun!</i>)";
+        } else {
+            $countdown = " (⚠️ <i>Muddati tugagan</i>)";
+        }
+
+        $formattedDeadline = "{$day}-{$month}, {$year} {$hour}" . $countdown;
+        $text .= "🗓 <b>Muddati:</b> {$formattedDeadline}\n";
+    }
+
+    // Chiziq va hashtaglar
+    $tag = preg_replace('/\s+/', '', $categoryName);
+    $text .= "────────────────────\n";
+    $text .= "🏷 <i>#{$tag} #YoshlarHub</i>";
+
+    return $text;
+}
+
 $update = json_decode(file_get_contents('php://input'), true);
 
 if (!is_array($update)) {
@@ -53,50 +112,38 @@ if (isset($update['callback_query'])) {
         }
 
         foreach ($items as $item) {
+            $text = formatOpportunityCard($item);
 
-            $text =
-                $item['emoji'] . ' <b>' .
-                htmlspecialchars($item['title']) .
-                "</b>\n\n" .
-                htmlspecialchars($item['description']) . "\n\n";
-
-            if (!empty($item['organizer'])) {
-                $text .= "🏢 " .
-                    htmlspecialchars($item['organizer']) .
-                    "\n";
-            }
-
-            if (!empty($item['region'])) {
-                $text .= "📍 " .
-                    htmlspecialchars($item['region']) .
-                    "\n";
-            }
-
-            if (!empty($item['deadline'])) {
-                $text .= "⏰ " .
-                    htmlspecialchars($item['deadline']) .
-                    "\n";
-            }
-
-            $keyboard = [
-                'inline_keyboard' => [
+            $inlineKeyboard = [
+                [
                     [
-                        [
-                            'text' => '⭐ Saqlash',
-                            'callback_data' => 'save:' . $item['id'],
-                        ],
-                        [
-                            'text' => '🔗 Batafsil',
-                            'url' => $item['url'] ?: 'https://t.me/',
-                        ],
+                        'text' => '⭐ Saqlab qo\'yish',
+                        'callback_data' => 'save:' . $item['id'],
                     ],
-                ],
+                ]
+            ];
+
+            if (!empty($item['url'])) {
+                $inlineKeyboard[0][] = [
+                    'text' => '🔗 Batafsil ↗️',
+                    'url' => $item['url'],
+                ];
+            }
+
+            // Do'stlarga ulashish tugmasi
+            $shareText = urlencode("Qarang, qiziq imkoniyat topdim:\n" . $item['title']);
+            $shareUrl = !empty($item['url']) ? urlencode($item['url']) : 'https://t.me/yoshlarhub';
+            $inlineKeyboard[] = [
+                [
+                    'text' => '📤 Do\'stlarga ulashish',
+                    'url' => "https://t.me/share/url?url={$shareUrl}&text={$shareText}",
+                ]
             ];
 
             $telegram->sendMessage(
                 $chatId,
                 $text,
-                $keyboard
+                ['inline_keyboard' => $inlineKeyboard]
             );
         }
 
@@ -292,51 +339,38 @@ if (isset($categoryMap[$text])) {
     }
 
     foreach ($items as $item) {
+        $messageText = formatOpportunityCard($item);
 
-        $messageText =
-            $item['emoji'] .
-            ' <b>' .
-            htmlspecialchars($item['title']) .
-            "</b>\n\n" .
-            htmlspecialchars($item['description']);
-
-        if (!empty($item['organizer'])) {
-            $messageText .=
-                "\n\n🏢 " .
-                htmlspecialchars($item['organizer']);
-        }
-
-        if (!empty($item['region'])) {
-            $messageText .=
-                "\n📍 " .
-                htmlspecialchars($item['region']);
-        }
-
-        if (!empty($item['deadline'])) {
-            $messageText .=
-                "\n⏰ " .
-                htmlspecialchars($item['deadline']);
-        }
-
-        $keyboard = [
-            'inline_keyboard' => [
+        $inlineKeyboard = [
+            [
                 [
-                    [
-                        'text' => '⭐ Saqlash',
-                        'callback_data' => 'save:' . $item['id'],
-                    ],
-                    [
-                        'text' => '🔗 Batafsil',
-                        'url' => $item['url'] ?: 'https://t.me/',
-                    ],
+                    'text' => '⭐ Saqlab qo\'yish',
+                    'callback_data' => 'save:' . $item['id'],
                 ],
-            ],
+            ]
+        ];
+
+        if (!empty($item['url'])) {
+            $inlineKeyboard[0][] = [
+                'text' => '🔗 Batafsil ↗️',
+                'url' => $item['url'],
+            ];
+        }
+
+        // Do'stlarga ulashish tugmasi
+        $shareText = urlencode("Qarang, YoshlarHub'da yangi imkoniyat chiqibdi:\n" . $item['title']);
+        $shareUrl = !empty($item['url']) ? urlencode($item['url']) : 'https://t.me/yoshlarhub';
+        $inlineKeyboard[] = [
+            [
+                'text' => '📤 Do\'stlarga ulashish',
+                'url' => "https://t.me/share/url?url={$shareUrl}&text={$shareText}",
+            ]
         ];
 
         $telegram->sendMessage(
             $chatId,
             $messageText,
-            $keyboard
+            ['inline_keyboard' => $inlineKeyboard]
         );
     }
 
@@ -373,28 +407,20 @@ if ($text === '⭐ Saqlanganlar') {
     );
 
     foreach ($items as $item) {
+        $messageText = formatOpportunityCard($item);
 
-        $messageText =
-            $item['emoji'] .
-            ' <b>' .
-            htmlspecialchars($item['title']) .
-            "</b>\n\n" .
-            htmlspecialchars($item['description']);
-
-        $keyboard = [
-            'inline_keyboard' => [
+        $inlineKeyboard = [
+            [
                 [
-                    [
-                        'text' => '🗑 Olib tashlash',
-                        'callback_data' => 'remove:' . $item['id'],
-                    ],
+                    'text' => '🗑 Olib tashlash',
+                    'callback_data' => 'remove:' . $item['id'],
                 ],
             ],
         ];
 
         if (!empty($item['url'])) {
-            $keyboard['inline_keyboard'][0][] = [
-                'text' => '🔗 Ochish',
+            $inlineKeyboard[0][] = [
+                'text' => '🔗 Ochish ↗️',
                 'url' => $item['url'],
             ];
         }
@@ -402,7 +428,7 @@ if ($text === '⭐ Saqlanganlar') {
         $telegram->sendMessage(
             $chatId,
             $messageText,
-            $keyboard
+            ['inline_keyboard' => $inlineKeyboard]
         );
     }
 
@@ -516,36 +542,37 @@ if ($text !== '') {
     );
 
     foreach ($items as $item) {
+        $messageText = formatOpportunityCard($item);
 
-        $messageText =
-            $item['emoji'] .
-            ' <b>' .
-            htmlspecialchars($item['title']) .
-            "</b>\n\n" .
-            htmlspecialchars($item['description']);
-
-        $keyboard = [
-            'inline_keyboard' => [
+        $inlineKeyboard = [
+            [
                 [
-                    [
-                        'text' => '⭐ Saqlash',
-                        'callback_data' => 'save:' . $item['id'],
-                    ],
+                    'text' => '⭐ Saqlab qo\'yish',
+                    'callback_data' => 'save:' . $item['id'],
                 ],
             ],
         ];
 
         if (!empty($item['url'])) {
-            $keyboard['inline_keyboard'][0][] = [
-                'text' => '🔗 Batafsil',
+            $inlineKeyboard[0][] = [
+                'text' => '🔗 Batafsil ↗️',
                 'url' => $item['url'],
             ];
         }
 
+        $shareText = urlencode("Qarang, qiziq imkoniyat topdim:\n" . $item['title']);
+        $shareUrl = !empty($item['url']) ? urlencode($item['url']) : 'https://t.me/yoshlarhub';
+        $inlineKeyboard[] = [
+            [
+                'text' => '📤 Do\'stlarga ulashish',
+                'url' => "https://t.me/share/url?url={$shareUrl}&text={$shareText}",
+            ]
+        ];
+
         $telegram->sendMessage(
             $chatId,
             $messageText,
-            $keyboard
+            ['inline_keyboard' => $inlineKeyboard]
         );
     }
 }
