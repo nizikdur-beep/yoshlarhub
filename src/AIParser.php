@@ -57,9 +57,17 @@ Javobni FAQAT toza JSON formatida bering (hech qanday markdown yoki ```json belg
 }
 PROMPT;
 
-        $models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
-        $response = false;
-        $usedModel = '';
+        $models = [
+            'gemini-2.5-flash',
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-exp',
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-latest',
+            'gemini-pro'
+        ];
+
+        $successfulResponse = null;
+        $lastError = '';
 
         foreach ($models as $model) {
             $apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key=" . $this->apiKey;
@@ -95,28 +103,26 @@ PROMPT;
 
             if ($response) {
                 $resJson = json_decode($response, true);
-                if (!isset($resJson['error']) && !empty($resJson['candidates'][0]['content']['parts'][0]['text'])) {
-                    $usedModel = $model;
-                    break;
+                if (isset($resJson['error'])) {
+                    $lastError = $resJson['error']['message'] ?? 'Xato';
+                    continue; // Keyingi modelni sinaymiz
+                }
+
+                $text = $resJson['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                if (!empty($text)) {
+                    $successfulResponse = $text;
+                    break; // Muvaffaqiyatli!
                 }
             }
         }
 
-        if (!$response) {
-            echo " <b style='color:red;'>[API ulanishda xato]</b> ";
+        if ($successfulResponse === null) {
+            echo " <b style='color:red;'>[Gemini xatosi: " . htmlspecialchars($lastError ?: 'Javob olinmadi') . "]</b> ";
             return null;
         }
-
-        $resJson = json_decode($response, true);
-        if (isset($resJson['error'])) {
-            echo " <b style='color:red;'>[Gemini xatosi: " . htmlspecialchars($resJson['error']['message'] ?? '') . "]</b> ";
-            return null;
-        }
-
-        $responseText = $resJson['candidates'][0]['content']['parts'][0]['text'] ?? '';
 
         // Tozalash (agar ```json bo'lsa)
-        $cleanJson = trim($responseText);
+        $cleanJson = trim($successfulResponse);
         $cleanJson = preg_replace('/^```(?:json)?\s*/i', '', $cleanJson);
         $cleanJson = preg_replace('/\s*```$/i', '', $cleanJson);
         $cleanJson = trim($cleanJson);
@@ -127,7 +133,7 @@ PROMPT;
             return null;
         }
 
-        // Rasm mantig'i
+        // Rasm mantig'i: agar rasm topilgan bo'lsa o'shani olamiz, bo'lmasa kategoriya bo'yicha chiroyli cover beramiz
         $imageUrl = $extractedImageUrl;
         if (empty($imageUrl)) {
             $imageUrl = $this->generateDefaultBanner((int)($parsed['category_id'] ?? 1));
