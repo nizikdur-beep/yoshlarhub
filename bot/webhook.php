@@ -12,6 +12,12 @@ $db = new Database($config)->pdo();
 $telegram = new Telegram($config['bot_token']);
 $opportunity = new Opportunity($db);
 
+$update = json_decode(file_get_contents('php://input'), true);
+
+if (!is_array($update)) {
+    exit;
+}
+
 /**
  * Imkoniyat kartasini zamonaviy va chiroyli formatlash
  */
@@ -38,7 +44,7 @@ function formatOpportunityCard(array $item): string
         $text .= "📍 <b>Hudud:</b> " . htmlspecialchars($item['region']) . "\n";
     }
 
-    // Deadline (chiroyli format va qolgan kunlar hisoblagichi)
+    // Deadline (chiroyli sana va qolgan kunlar hisoblagichi)
     if (!empty($item['deadline'])) {
         $time = strtotime($item['deadline']);
         $months = [
@@ -54,7 +60,7 @@ function formatOpportunityCard(array $item): string
         $diff = $time - $now;
         if ($diff > 0) {
             $days = (int) floor($diff / 86400);
-            $countdown = $days > 0 ? " (⏳ <i>{$days} kun qoldi</i>)" : " (⏳ <i>Bugun oxirgi kun!</i>)";
+            $countdown = $days > 0 ? " (⏳ <i>{$days} kun qoldi</i>)" : " (⏳ <i>Bugun so'nggi kun!</i>)";
         } else {
             $countdown = " (⚠️ <i>Muddati tugagan</i>)";
         }
@@ -63,7 +69,7 @@ function formatOpportunityCard(array $item): string
         $text .= "🗓 <b>Muddati:</b> {$formattedDeadline}\n";
     }
 
-    // Chiziq va hashtaglar
+    // Ajratuvchi chiziq va hashtaglar
     $tag = preg_replace('/\s+/', '', $categoryName);
     $text .= "────────────────────\n";
     $text .= "🏷 <i>#{$tag} #YoshlarHub</i>";
@@ -71,127 +77,239 @@ function formatOpportunityCard(array $item): string
     return $text;
 }
 
-$update = json_decode(file_get_contents('php://input'), true);
+/**
+ * Musiqa boti uslubidagi interaktiv raqamli katalog yaratish
+ */
+function renderCategoryCatalog(Opportunity $oppModel, int $categoryId, int $page = 1): array
+{
+    $categories = $oppModel->categories();
+    $currentCategory = null;
+    foreach ($categories as $cat) {
+        if ((int)$cat['id'] === $categoryId) {
+            $currentCategory = $cat;
+            break;
+        }
+    }
 
-if (!is_array($update)) {
-    exit;
+    $categoryName = $currentCategory['name'] ?? 'Imkoniyatlar';
+    $categoryEmoji = $currentCategory['emoji'] ?? '📂';
+
+    $data = $oppModel->paginateByCategory($categoryId, $page, 5);
+    $items = $data['items'];
+    $total = $data['total'];
+    $totalPages = max(1, $data['totalPages']);
+
+    if (empty($items)) {
+        return [
+            'text' => "{$categoryEmoji} <b>" . mb_strtoupper($categoryName, 'UTF-8') . " BO'LIMI</b>\n\n"
+                    . "😔 Hozircha bu yo'nalishda faol e'lonlar mavjud emas.\n"
+                    . "Tez orada yangi imkoniyatlar qo'shiladi!",
+            'keyboard' => null,
+            'total' => 0
+        ];
+    }
+
+    // Raqamlar emojisi
+    $numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+
+    $text = "{$categoryEmoji} <b>" . mb_strtoupper($categoryName, 'UTF-8') . " BO'LIMI</b>\n";
+    $text .= "<i>O'zingizga qiziq bo'lgan imkoniyat raqamini tanlang:</i>\n";
+    $text .= "────────────────────\n\n";
+
+    $numberRow = [];
+    foreach ($items as $idx => $item) {
+        $num = $idx + 1;
+        $numEmoji = $numberEmojis[$idx] ?? "{$num}.";
+
+        $deadlineStr = '';
+        if (!empty($item['deadline'])) {
+            $deadlineStr = ' | ⏰ ' . date('d.m.Y', strtotime($item['deadline']));
+        }
+
+        $regionStr = !empty($item['region']) ? htmlspecialchars($item['region']) : "O'zbekiston";
+
+        $text .= "{$numEmoji} <b>" . htmlspecialchars($item['title']) . "</b>\n";
+        $text .= "📍 <i>{$regionStr}</i>{$deadlineStr}\n\n";
+
+        $numberRow[] = [
+            'text' => $numEmoji,
+            'callback_data' => "view:{$item['id']}:{$categoryId}:{$page}",
+        ];
+    }
+
+    $text .= "────────────────────\n";
+    $text .= "📊 <i>Jami: {$total} ta imkoniyat | Sahifa: {$page}/{$totalPages}</i>";
+
+    $inlineKeyboard = [];
+    $inlineKeyboard[] = $numberRow;
+
+    // Sahifalash (agar 5 tadan ko'p bo'lsa)
+    if ($totalPages > 1) {
+        $navRow = [];
+        if ($page > 1) {
+            $prev = $page - 1;
+            $navRow[] = [
+                'text' => '⬅️ Oldingi',
+                'callback_data' => "catpage:{$categoryId}:{$prev}",
+            ];
+        }
+
+        $navRow[] = [
+            'text' => "📄 {$page}/{$totalPages}",
+            'callback_data' => 'noop',
+        ];
+
+        if ($page < $totalPages) {
+            $next = $page + 1;
+            $navRow[] = [
+                'text' => 'Keyingi ➡️',
+                'callback_data' => "catpage:{$categoryId}:{$next}",
+            ];
+        }
+        $inlineKeyboard[] = $navRow;
+    }
+
+    return [
+        'text' => $text,
+        'keyboard' => ['inline_keyboard' => $inlineKeyboard],
+        'total' => $total,
+    ];
 }
 
 /*
 |--------------------------------------------------------------------------
-| Callback Query
+| Callback Query (Tugmalar bosilganda)
 |--------------------------------------------------------------------------
 */
 
 if (isset($update['callback_query'])) {
 
     $callback = $update['callback_query'];
-
     $callbackId = $callback['id'];
     $data = $callback['data'] ?? '';
 
     $from = $callback['from'];
     $userId = (int) $from['id'];
-
     $chatId = (int) ($callback['message']['chat']['id'] ?? $userId);
+    $messageId = (int) ($callback['message']['message_id'] ?? 0);
 
-    if (str_starts_with($data, 'category:')) {
+    // Bo'sh callback (noop)
+    if ($data === 'noop') {
+        $telegram->request('answerCallbackQuery', ['callback_query_id' => $callbackId]);
+        exit;
+    }
 
-        $categoryId = (int) str_replace('category:', '', $data);
+    // 1. Sahifalash (Katalog ro'yxati)
+    if (str_starts_with($data, 'catpage:')) {
+        $parts = explode(':', $data);
+        $categoryId = (int) ($parts[1] ?? 1);
+        $page = (int) ($parts[2] ?? 1);
 
-        $items = $opportunity->latestByCategory($categoryId, 10);
+        $catalog = renderCategoryCatalog($opportunity, $categoryId, $page);
 
-        if (!$items) {
+        $telegram->editMessageText(
+            $chatId,
+            $messageId,
+            $catalog['text'],
+            $catalog['keyboard']
+        );
+
+        $telegram->request('answerCallbackQuery', ['callback_query_id' => $callbackId]);
+        exit;
+    }
+
+    // 2. Raqam bosilganda: Karta ochiladi (Rasm bilan!)
+    if (str_starts_with($data, 'view:')) {
+        $parts = explode(':', $data);
+        $opportunityId = (int) ($parts[1] ?? 0);
+        $categoryId = (int) ($parts[2] ?? 1);
+        $page = (int) ($parts[3] ?? 1);
+
+        $item = $opportunity->find($opportunityId);
+
+        if (!$item) {
             $telegram->request('answerCallbackQuery', [
                 'callback_query_id' => $callbackId,
-                'text' => 'Hozircha imkoniyat topilmadi.',
-                'show_alert' => false,
+                'text' => 'Bu imkoniyat topilmadi yoki o‘chirilgan.',
+                'show_alert' => true,
             ]);
-
             exit;
         }
 
-        foreach ($items as $item) {
-            $text = formatOpportunityCard($item);
+        $cardText = formatOpportunityCard($item);
 
-            $inlineKeyboard = [
+        $inlineKeyboard = [
+            [
                 [
-                    [
-                        'text' => '⭐ Saqlab qo\'yish',
-                        'callback_data' => 'save:' . $item['id'],
-                    ],
-                ]
+                    'text' => '⭐ Saqlab qo\'yish',
+                    'callback_data' => 'save:' . $item['id'],
+                ],
+            ]
+        ];
+
+        if (!empty($item['url'])) {
+            $inlineKeyboard[0][] = [
+                'text' => '🔗 Ariza topshirish ↗️',
+                'url' => $item['url'],
             ];
+        }
 
-            if (!empty($item['url'])) {
-                $inlineKeyboard[0][] = [
-                    'text' => '🔗 Batafsil ↗️',
-                    'url' => $item['url'],
-                ];
-            }
+        // Do'stlarga ulashish
+        $shareText = urlencode("Qarang, YoshlarHub'da yangi imkoniyat chiqibdi:\n" . $item['title']);
+        $shareUrl = !empty($item['url']) ? urlencode($item['url']) : 'https://t.me/yoshlarhub';
 
-            // Do'stlarga ulashish tugmasi
-            $shareText = urlencode("Qarang, qiziq imkoniyat topdim:\n" . $item['title']);
-            $shareUrl = !empty($item['url']) ? urlencode($item['url']) : 'https://t.me/yoshlarhub';
-            $inlineKeyboard[] = [
-                [
-                    'text' => '📤 Do\'stlarga ulashish',
-                    'url' => "https://t.me/share/url?url={$shareUrl}&text={$shareText}",
-                ]
-            ];
+        $inlineKeyboard[] = [
+            [
+                'text' => '🔙 Ro\'yxatga qaytish',
+                'callback_data' => "catpage:{$categoryId}:{$page}",
+            ],
+            [
+                'text' => '📤 Ulashish',
+                'url' => "https://t.me/share/url?url={$shareUrl}&text={$shareText}",
+            ]
+        ];
 
-            $telegram->sendMessage(
+        // Agar rasm bo'lsa -> Rasm bilan yuboramiz
+        if (!empty($item['image_url'])) {
+            // Eski ro'yxatni o'chirib, rasm bilan yangi jo'natamiz (chunki matnni rasmga aylantirib bo'lmaydi)
+            $telegram->deleteMessage($chatId, $messageId);
+            $telegram->sendPhoto(
                 $chatId,
-                $text,
+                $item['image_url'],
+                $cardText,
+                ['inline_keyboard' => $inlineKeyboard]
+            );
+        } else {
+            // Rasm bo'lmasa matnni chiroyli almashtiramiz
+            $telegram->editMessageText(
+                $chatId,
+                $messageId,
+                $cardText,
                 ['inline_keyboard' => $inlineKeyboard]
             );
         }
 
-        $telegram->request('answerCallbackQuery', [
-            'callback_query_id' => $callbackId,
-        ]);
-
+        $telegram->request('answerCallbackQuery', ['callback_query_id' => $callbackId]);
         exit;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Save
-    |--------------------------------------------------------------------------
-    */
-
+    // 3. Saqlash (Bookmark)
     if (str_starts_with($data, 'save:')) {
-
         $opportunityId = (int) str_replace('save:', '', $data);
-
-        $opportunity->addBookmark(
-            $userId,
-            $opportunityId
-        );
+        $opportunity->addBookmark($userId, $opportunityId);
 
         $telegram->request('answerCallbackQuery', [
             'callback_query_id' => $callbackId,
-            'text' => '⭐ Saqlandi!',
+            'text' => '⭐ Saqlanganlarga muvaffaqiyatli qo‘shildi!',
             'show_alert' => false,
         ]);
-
         exit;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Remove bookmark
-    |--------------------------------------------------------------------------
-    */
-
+    // 4. Saqlanganlardan o'chirish
     if (str_starts_with($data, 'remove:')) {
-
         $opportunityId = (int) str_replace('remove:', '', $data);
-
-        $opportunity->removeBookmark(
-            $userId,
-            $opportunityId
-        );
+        $opportunity->removeBookmark($userId, $opportunityId);
 
         $telegram->request('answerCallbackQuery', [
             'callback_query_id' => $callbackId,
@@ -199,16 +317,16 @@ if (isset($update['callback_query'])) {
             'show_alert' => false,
         ]);
 
+        $telegram->deleteMessage($chatId, $messageId);
         exit;
     }
 
     exit;
 }
 
-
 /*
 |--------------------------------------------------------------------------
-| Oddiy Message
+| Oddiy Xabar (Message)
 |--------------------------------------------------------------------------
 */
 
@@ -222,9 +340,15 @@ $chatId = (int) $message['chat']['id'];
 $user = $message['from'];
 
 $userId = (int) $user['id'];
-$firstName = $user['first_name'] ?? '';
+$firstName = htmlspecialchars(trim($user['first_name'] ?? ''));
+$lastName = htmlspecialchars(trim($user['last_name'] ?? ''));
+$fullName = trim("{$firstName} {$lastName}");
+if ($fullName === '') {
+    $fullName = "Do'stim";
+}
 $username = $user['username'] ?? null;
 
+// Foydalanuvchini bazaga yozish / yangilash
 $stmt = $db->prepare("
     INSERT INTO users
         (id, first_name, username)
@@ -237,14 +361,13 @@ $stmt = $db->prepare("
 
 $stmt->execute([
     ':id' => $userId,
-    ':first_name' => $firstName,
+    ':first_name' => $fullName,
     ':username' => $username,
 ]);
 
-
 /*
 |--------------------------------------------------------------------------
-| Menyu
+| Asosiy Menyu Tugmalari
 |--------------------------------------------------------------------------
 */
 
@@ -277,34 +400,39 @@ function mainKeyboard(): array
     ];
 }
 
+$text = trim($message['text'] ?? '');
 
 /*
 |--------------------------------------------------------------------------
-| /start
+| /start (Ism va familiya bilan shaxsiy salomlashuv)
 |--------------------------------------------------------------------------
 */
 
-$text = trim($message['text'] ?? '');
-
 if ($text === '/start') {
+
+    $welcomeText =
+        "Assalomu alaykum, <b>{$fullName}</b>! 🌟\n\n" .
+        "🇺🇿 <b>YoshlarHub</b> — O‘zbekiston yoshlari uchun eng sara imkoniyatlar maydoniga xush kelibsiz!\n\n" .
+        "Bu yerda siz o‘zingizga mos:\n" .
+        "🎓 <b>Grantlar</b> va xalqaro stipendiyalar\n" .
+        "🏆 <b>Tanlovlar</b> va nufuzli musobaqalar\n" .
+        "💼 <b>Stajirovkalar</b> va amaliyot dasturlari\n" .
+        "🤝 <b>Volontyorlik</b> harakatlari\n" .
+        "📚 Zamonaviy <b>kurslar</b>ni topishingiz mumkin.\n\n" .
+        "<i>Kerakli bo‘limni tanlang:</i> 👇";
 
     $telegram->sendMessage(
         $chatId,
-        "👋 <b>YoshlarHub</b>ga xush kelibsiz!\n\n" .
-        "🇺🇿 O'zbekiston yoshlariga grant, tanlov, " .
-        "stajirovka, kurs, volontyorlik va boshqa " .
-        "imkoniyatlarni topishda yordam beramiz.\n\n" .
-        "Kerakli bo'limni tanlang:",
+        $welcomeText,
         mainKeyboard()
     );
 
     exit;
 }
 
-
 /*
 |--------------------------------------------------------------------------
-| Categories
+| Kategoriyalar (Musiqa boti uslubidagi interaktiv katalog)
 |--------------------------------------------------------------------------
 */
 
@@ -321,62 +449,16 @@ $categoryMap = [
 if (isset($categoryMap[$text])) {
 
     $categoryId = $categoryMap[$text];
+    $catalog = renderCategoryCatalog($opportunity, $categoryId, 1);
 
-    $items = $opportunity->latestByCategory(
-        $categoryId,
-        10
+    $telegram->sendMessage(
+        $chatId,
+        $catalog['text'],
+        $catalog['keyboard']
     );
-
-    if (!$items) {
-
-        $telegram->sendMessage(
-            $chatId,
-            "😔 Hozircha bu bo'limda imkoniyatlar yo'q.",
-            mainKeyboard()
-        );
-
-        exit;
-    }
-
-    foreach ($items as $item) {
-        $messageText = formatOpportunityCard($item);
-
-        $inlineKeyboard = [
-            [
-                [
-                    'text' => '⭐ Saqlab qo\'yish',
-                    'callback_data' => 'save:' . $item['id'],
-                ],
-            ]
-        ];
-
-        if (!empty($item['url'])) {
-            $inlineKeyboard[0][] = [
-                'text' => '🔗 Batafsil ↗️',
-                'url' => $item['url'],
-            ];
-        }
-
-        // Do'stlarga ulashish tugmasi
-        $shareText = urlencode("Qarang, YoshlarHub'da yangi imkoniyat chiqibdi:\n" . $item['title']);
-        $shareUrl = !empty($item['url']) ? urlencode($item['url']) : 'https://t.me/yoshlarhub';
-        $inlineKeyboard[] = [
-            [
-                'text' => '📤 Do\'stlarga ulashish',
-                'url' => "https://t.me/share/url?url={$shareUrl}&text={$shareText}",
-            ]
-        ];
-
-        $telegram->sendMessage(
-            $chatId,
-            $messageText,
-            ['inline_keyboard' => $inlineKeyboard]
-        );
-    }
 
     exit;
 }
-
 
 /*
 |--------------------------------------------------------------------------
@@ -389,25 +471,23 @@ if ($text === '⭐ Saqlanganlar') {
     $items = $opportunity->bookmarks($userId);
 
     if (!$items) {
-
         $telegram->sendMessage(
             $chatId,
-            "⭐ <b>Saqlanganlar</b>\n\n" .
-            "Hozircha hech narsa saqlanmagan.",
+            "⭐ <b>Saqlanganlar ro'yxati bo'sh</b>\n\n" .
+            "Sizga yoqqan imkoniyatlardagi <b>[⭐ Saqlab qo'yish]</b> tugmasini bossangiz, ular shu yerda saqlanadi!",
             mainKeyboard()
         );
-
         exit;
     }
 
     $telegram->sendMessage(
         $chatId,
-        "⭐ <b>Saqlangan imkoniyatlaringiz:</b>",
+        "⭐ <b>Saqlangan imkoniyatlaringiz:</b> (" . count($items) . " ta)",
         mainKeyboard()
     );
 
     foreach ($items as $item) {
-        $messageText = formatOpportunityCard($item);
+        $cardText = formatOpportunityCard($item);
 
         $inlineKeyboard = [
             [
@@ -425,16 +505,24 @@ if ($text === '⭐ Saqlanganlar') {
             ];
         }
 
-        $telegram->sendMessage(
-            $chatId,
-            $messageText,
-            ['inline_keyboard' => $inlineKeyboard]
-        );
+        if (!empty($item['image_url'])) {
+            $telegram->sendPhoto(
+                $chatId,
+                $item['image_url'],
+                $cardText,
+                ['inline_keyboard' => $inlineKeyboard]
+            );
+        } else {
+            $telegram->sendMessage(
+                $chatId,
+                $cardText,
+                ['inline_keyboard' => $inlineKeyboard]
+            );
+        }
     }
 
     exit;
 }
-
 
 /*
 |--------------------------------------------------------------------------
@@ -446,19 +534,18 @@ if ($text === '🔎 Qidirish') {
 
     $telegram->sendMessage(
         $chatId,
-        "🔎 <b>Qidiruv</b>\n\n" .
-        "Imkoniyat nomi yoki kalit so'zni yuboring.\n\n" .
+        "🔎 <b>Imkoniyatlarni qidirish</b>\n\n" .
+        "O‘zingiz qiziqqan yo‘nalish yoki kalit so‘zni yozib yuboring:\n\n" .
         "Masalan:\n" .
-        "• Python\n" .
-        "• grant\n" .
-        "• startup\n" .
-        "• ingliz tili",
+        "• <code>Python</code> yoki <code>Frontend</code>\n" .
+        "• <code>Grant</code> yoki <code>Stipendiya</code>\n" .
+        "• <code>Startap</code>\n" .
+        "• <code>Ingliz tili</code>",
         mainKeyboard()
     );
 
     exit;
 }
-
 
 /*
 |--------------------------------------------------------------------------
@@ -473,76 +560,76 @@ if ($text === '👤 Profil') {
             first_name,
             username,
             region,
-            age
+            age,
+            created_at
         FROM users
         WHERE id = ?
     ");
 
     $stmt->execute([$userId]);
-
     $profile = $stmt->fetch();
 
-    $name = htmlspecialchars(
-        $profile['first_name'] ?? $firstName
-    );
-
+    $name = htmlspecialchars($profile['first_name'] ?? $fullName);
     $usernameText = !empty($profile['username'])
         ? '@' . htmlspecialchars($profile['username'])
-        : 'Ko\'rsatilmagan';
+        : 'Ko‘rsatilmagan';
 
     $region = !empty($profile['region'])
         ? htmlspecialchars($profile['region'])
         : 'Belgilanmagan';
 
-    $age = $profile['age'] ?? 'Belgilanmagan';
+    $age = !empty($profile['age']) ? $profile['age'] . ' yosh' : 'Belgilanmagan';
+    $joinedDate = !empty($profile['created_at']) ? date('d.m.Y', strtotime($profile['created_at'])) : date('d.m.Y');
+
+    $profileText =
+        "👤 <b>FOYDALANUVCHI PROFILI</b>\n" .
+        "────────────────────\n" .
+        "🧑 <b>F.I.SH:</b> {$name}\n" .
+        "📱 <b>Username:</b> {$usernameText}\n" .
+        "🆔 <b>Telegram ID:</b> <code>{$userId}</code>\n" .
+        "📍 <b>Hudud:</b> {$region}\n" .
+        "🎂 <b>Yosh:</b> {$age}\n" .
+        "🗓 <b>A'zo bo'lgan sana:</b> {$joinedDate}\n" .
+        "────────────────────\n" .
+        "💡 <i>Profil ma'lumotlarini to'ldirish orqali o'zingizga mos tavsiyalarni olasiz!</i>";
 
     $telegram->sendMessage(
         $chatId,
-        "👤 <b>Profil</b>\n\n" .
-        "🧑 Ism: {$name}\n" .
-        "📱 Username: {$usernameText}\n" .
-        "📍 Hudud: {$region}\n" .
-        "🎂 Yosh: {$age}",
+        $profileText,
         mainKeyboard()
     );
 
     exit;
 }
 
-
 /*
 |--------------------------------------------------------------------------
-| Search result
+| Qidiruv natijalari
 |--------------------------------------------------------------------------
 */
 
 if ($text !== '') {
 
-    $items = $opportunity->search(
-        $text,
-        10
-    );
+    $items = $opportunity->search($text, 10);
 
     if (!$items) {
-
         $telegram->sendMessage(
             $chatId,
-            "🔎 <b>Natija topilmadi.</b>\n\n" .
-            "Boshqa kalit so'z bilan urinib ko'ring.",
+            "🔎 <b>Natija topilmadi</b>\n\n" .
+            "«{$text}» bo‘yicha hech qanday imkoniyat topilmadi. Boshqa so‘z bilan qidirib ko‘ring.",
             mainKeyboard()
         );
-
         exit;
     }
 
     $telegram->sendMessage(
         $chatId,
-        "🔎 <b>Qidiruv natijalari:</b>",
+        "🔎 <b>«{$text}» bo‘yicha topilgan imkoniyatlar:</b> (" . count($items) . " ta)",
         mainKeyboard()
     );
 
     foreach ($items as $item) {
-        $messageText = formatOpportunityCard($item);
+        $cardText = formatOpportunityCard($item);
 
         $inlineKeyboard = [
             [
@@ -555,7 +642,7 @@ if ($text !== '') {
 
         if (!empty($item['url'])) {
             $inlineKeyboard[0][] = [
-                'text' => '🔗 Batafsil ↗️',
+                'text' => '🔗 Ariza topshirish ↗️',
                 'url' => $item['url'],
             ];
         }
@@ -569,10 +656,19 @@ if ($text !== '') {
             ]
         ];
 
-        $telegram->sendMessage(
-            $chatId,
-            $messageText,
-            ['inline_keyboard' => $inlineKeyboard]
-        );
+        if (!empty($item['image_url'])) {
+            $telegram->sendPhoto(
+                $chatId,
+                $item['image_url'],
+                $cardText,
+                ['inline_keyboard' => $inlineKeyboard]
+            );
+        } else {
+            $telegram->sendMessage(
+                $chatId,
+                $cardText,
+                ['inline_keyboard' => $inlineKeyboard]
+            );
+        }
     }
 }

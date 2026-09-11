@@ -63,4 +63,58 @@ class Telegram
 
         return $this->request('sendMessage', $data);
     }
+
+    public function sendPhoto(
+        int|string $chatId,
+        string $photoUrl,
+        string $caption = '',
+        ?array $keyboard = null
+    ): array {
+        $data = [
+            'chat_id' => $chatId,
+            'photo' => $photoUrl,
+            'caption' => $caption,
+            'parse_mode' => 'HTML',
+        ];
+
+        if ($keyboard !== null) {
+            $data['reply_markup'] = json_encode(
+                $keyboard,
+                JSON_UNESCAPED_UNICODE
+            );
+        }
+
+        return $this->request('sendPhoto', $data);
+    }
+
+    public function editMessageText(
+        int|string $chatId,
+        int $messageId,
+        string $text,
+        ?array $keyboard = null
+    ): array {
+        $data = [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'text' => $text,
+            'parse_mode' => 'HTML',
+        ];
+
+        if ($keyboard !== null) {
+            $data['reply_markup'] = json_encode(
+                $keyboard,
+                JSON_UNESCAPED_UNICODE
+            );
+        }
+
+        return $this->request('editMessageText', $data);
+    }
+
+    public function deleteMessage(int|string $chatId, int $messageId): array
+    {
+        return $this->request('deleteMessage', [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+        ]);
+    }
 }

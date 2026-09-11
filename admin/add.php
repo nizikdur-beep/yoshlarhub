@@ -31,6 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $region = trim($_POST['region'] ?? '');
     $organizer = trim($_POST['organizer'] ?? '');
     $url = trim($_POST['url'] ?? '');
+    $imageUrl = trim($_POST['image_url'] ?? '');
     $deadline = trim($_POST['deadline'] ?? '');
 
     if (
@@ -50,6 +51,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             region,
             organizer,
             url,
+            image_url,
             deadline,
             is_active
         )
@@ -61,6 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             :region,
             :organizer,
             :url,
+            :image_url,
             :deadline,
             1
         )
@@ -73,6 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ':region' => $region ?: null,
         ':organizer' => $organizer ?: null,
         ':url' => $url ?: null,
+        ':image_url' => $imageUrl ?: null,
         ':deadline' => $deadline ?: null,
     ]);
 
@@ -204,12 +208,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             placeholder="Tashkilot nomi"
         >
 
-        <label>Link</label>
+        <label>Link (Havola)</label>
 
         <input
             type="url"
             name="url"
             placeholder="https://..."
+        >
+
+        <label>🖼️ Rasm / Banner havolasi (URL - ixtiyoriy)</label>
+
+        <input
+            type="url"
+            name="image_url"
+            placeholder="https://... (Post uchun rasm/poster linki)"
         >
 
         <label>Deadline</label>

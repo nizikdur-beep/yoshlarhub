@@ -46,6 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $region = trim($_POST['region'] ?? '');
     $organizer = trim($_POST['organizer'] ?? '');
     $url = trim($_POST['url'] ?? '');
+    $imageUrl = trim($_POST['image_url'] ?? '');
     $deadline = trim($_POST['deadline'] ?? '');
 
     if ($title === '' || $description === '' || $categoryId <= 0) {
@@ -61,6 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 region = :region,
                 organizer = :organizer,
                 url = :url,
+                image_url = :image_url,
                 deadline = :deadline
             WHERE id = :id
         ");
@@ -72,6 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':region' => $region ?: null,
             ':organizer' => $organizer ?: null,
             ':url' => $url ?: null,
+            ':image_url' => $imageUrl ?: null,
             ':deadline' => $deadline ?: null,
             ':id' => $id,
         ]);
@@ -162,12 +165,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </p>
 
     <p>
-        <label>Havola</label><br>
+        <label>Havola (Link)</label><br>
         <input
             type="url"
             name="url"
             value="<?= htmlspecialchars($opportunity['url'] ?? '') ?>"
             placeholder="https://..."
+        >
+    </p>
+
+    <p>
+        <label>🖼️ Rasm / Poster havolasi (URL - ixtiyoriy)</label><br>
+        <input
+            type="url"
+            name="image_url"
+            value="<?= htmlspecialchars($opportunity['image_url'] ?? '') ?>"
+            placeholder="https://... rasm linki"
         >
     </p>
 
