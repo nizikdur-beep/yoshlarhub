@@ -5,10 +5,64 @@ declare(strict_types=1);
 class AIParser
 {
     private string $apiKey;
+    private ?string $activeModel = null;
 
     public function __construct(string $apiKey)
     {
         $this->apiKey = trim($apiKey);
+    }
+
+    /**
+     * Google'dan sizning API kalitingiz uchun mavjud bo'lgan modelni avtomatik aniqlash
+     */
+    private function getAvailableModel(): ?string
+    {
+        if ($this->activeModel !== null) {
+            return $this->activeModel;
+        }
+
+        $url = "https://generativelanguage.googleapis.com/v1beta/models?key=" . $this->apiKey;
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
+        ]);
+        $res = curl_exec($ch);
+        curl_close($ch);
+
+        if ($res) {
+            $data = json_decode($res, true);
+
+            if (isset($data['error'])) {
+                echo " <b style='color:red;'>[Google AI Xatosi: " . htmlspecialchars($data['error']['message'] ?? '') . "]</b> ";
+                return null;
+            }
+
+            if (!empty($data['models'])) {
+                // Flash modelini qidiramiz
+                foreach ($data['models'] as $m) {
+                    $name = str_replace('models/', '', $m['name']);
+                    $methods = $m['supportedGenerationMethods'] ?? [];
+                    if (in_array('generateContent', $methods) && str_contains($name, 'flash')) {
+                        $this->activeModel = $name;
+                        return $this->activeModel;
+                    }
+                }
+
+                // Agar flash topilmasa, istalgan generateContent modelini olamiz
+                foreach ($data['models'] as $m) {
+                    $name = str_replace('models/', '', $m['name']);
+                    $methods = $m['supportedGenerationMethods'] ?? [];
+                    if (in_array('generateContent', $methods)) {
+                        $this->activeModel = $name;
+                        return $this->activeModel;
+                    }
+                }
+            }
+        }
+
+        $this->activeModel = 'gemini-1.5-flash';
+        return $this->activeModel;
     }
 
     /**
@@ -18,6 +72,11 @@ class AIParser
     {
         if (empty($this->apiKey)) {
             echo " <b style='color:red;'>[XATO: GEMINI_API_KEY topilmadi! .env faylni tekshiring]</b> ";
+            return null;
+        }
+
+        $model = $this->getAvailableModel();
+        if (!$model) {
             return null;
         }
 
@@ -57,72 +116,51 @@ Javobni FAQAT toza JSON formatida bering (hech qanday markdown yoki ```json belg
 }
 PROMPT;
 
-        $models = [
-            'gemini-2.5-flash',
-            'gemini-2.0-flash',
-            'gemini-2.0-flash-exp',
-            'gemini-1.5-flash',
-            'gemini-1.5-flash-latest',
-            'gemini-pro'
-        ];
+        $apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key=" . $this->apiKey;
 
-        $successfulResponse = null;
-        $lastError = '';
-
-        foreach ($models as $model) {
-            $apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key=" . $this->apiKey;
-
-            $postData = [
-                'contents' => [
-                    [
-                        'role' => 'user',
-                        'parts' => [
-                            [
-                                'text' => $systemPrompt . "\n\nE'lon matni:\n" . $rawText
-                            ]
+        $postData = [
+            'contents' => [
+                [
+                    'parts' => [
+                        [
+                            'text' => $systemPrompt . "\n\nE'lon matni:\n" . $rawText
                         ]
                     ]
-                ],
-                'generationConfig' => [
-                    'temperature' => 0.2,
-                    'maxOutputTokens' => 1024,
                 ]
-            ];
+            ],
+            'generationConfig' => [
+                'temperature' => 0.2,
+                'maxOutputTokens' => 1024,
+            ]
+        ];
 
-            $ch = curl_init($apiUrl);
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => json_encode($postData),
-                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-                CURLOPT_TIMEOUT => 15,
-            ]);
+        $ch = curl_init($apiUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($postData),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_TIMEOUT => 20,
+        ]);
 
-            $response = curl_exec($ch);
-            curl_close($ch);
+        $response = curl_exec($ch);
+        curl_close($ch);
 
-            if ($response) {
-                $resJson = json_decode($response, true);
-                if (isset($resJson['error'])) {
-                    $lastError = $resJson['error']['message'] ?? 'Xato';
-                    continue; // Keyingi modelni sinaymiz
-                }
-
-                $text = $resJson['candidates'][0]['content']['parts'][0]['text'] ?? '';
-                if (!empty($text)) {
-                    $successfulResponse = $text;
-                    break; // Muvaffaqiyatli!
-                }
-            }
-        }
-
-        if ($successfulResponse === null) {
-            echo " <b style='color:red;'>[Gemini xatosi: " . htmlspecialchars($lastError ?: 'Javob olinmadi') . "]</b> ";
+        if (!$response) {
+            echo " <b style='color:red;'>[API ulanishda xatolik]</b> ";
             return null;
         }
 
-        // Tozalash (agar ```json bo'lsa)
-        $cleanJson = trim($successfulResponse);
+        $resJson = json_decode($response, true);
+        if (isset($resJson['error'])) {
+            echo " <b style='color:red;'>[Gemini: " . htmlspecialchars($resJson['error']['message'] ?? 'xato') . "]</b> ";
+            return null;
+        }
+
+        $responseText = $resJson['candidates'][0]['content']['parts'][0]['text'] ?? '';
+
+        // JSON tozalash
+        $cleanJson = trim($responseText);
         $cleanJson = preg_replace('/^```(?:json)?\s*/i', '', $cleanJson);
         $cleanJson = preg_replace('/\s*```$/i', '', $cleanJson);
         $cleanJson = trim($cleanJson);
@@ -133,7 +171,7 @@ PROMPT;
             return null;
         }
 
-        // Rasm mantig'i: agar rasm topilgan bo'lsa o'shani olamiz, bo'lmasa kategoriya bo'yicha chiroyli cover beramiz
+        // Rasm mantig'i: agar kanaldan rasm chiqqan bo'lsa o'sha rasmni saqlaymiz, bo'lmasa kategoriya posteri
         $imageUrl = $extractedImageUrl;
         if (empty($imageUrl)) {
             $imageUrl = $this->generateDefaultBanner((int)($parsed['category_id'] ?? 1));
@@ -152,7 +190,7 @@ PROMPT;
     }
 
     /**
-     * Agar e'londa rasm bo'lmasa, kategoriya bo'yicha jozibali poster yaratish
+     * Agar e'londa rasm bo'lmasa, kategoriya bo'yicha sifatli poster biriktirish
      */
     private function generateDefaultBanner(int $categoryId): string
     {
